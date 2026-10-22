@@ -479,28 +479,7 @@ class CommandCenterApp:
             Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-        self.win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-        self.win.set_name("overlay-win")
-        self.win.set_title("Command Center")
-
-        screen = self.win.get_screen()
-        visual = screen.get_rgba_visual()
-        if visual:
-            self.win.set_visual(visual)
-
-        GtkLayerShell.init_for_window(self.win)
-        GtkLayerShell.set_namespace(self.win, "command-center")
-        GtkLayerShell.set_layer(self.win, GtkLayerShell.Layer.OVERLAY)
-        GtkLayerShell.set_exclusive_zone(self.win, -1)
-        GtkLayerShell.set_keyboard_mode(self.win, GtkLayerShell.KeyboardMode.EXCLUSIVE)
-        for edge in (
-            GtkLayerShell.Edge.TOP,
-            GtkLayerShell.Edge.BOTTOM,
-            GtkLayerShell.Edge.LEFT,
-            GtkLayerShell.Edge.RIGHT,
-        ):
-            GtkLayerShell.set_anchor(self.win, edge, True)
-
+        self.win = None
         self.screen_w, self.screen_h = self.detect_focused_monitor_size()
 
         self.dragging_tile = None
@@ -508,7 +487,7 @@ class CommandCenterApp:
         self.resizing_tile = None
         self.resize_start_mouse = (0, 0)
         self.resize_start_size = (0, 0)
-        self.is_visible = not start_hidden
+        self.is_visible = False
 
         self.bg_ev = Gtk.EventBox()
         self.bg_ev.set_name("backdrop")
@@ -523,7 +502,6 @@ class CommandCenterApp:
         self.bg_ev.connect("button-press-event", self.on_backdrop_click)
         self.bg_ev.connect("motion-notify-event", self.on_global_motion)
         self.bg_ev.connect("button-release-event", self.on_global_release)
-        self.win.add(self.bg_ev)
 
         self.fixed = Gtk.Fixed()
         self.fixed.connect("draw", self.on_fixed_draw)
@@ -558,12 +536,36 @@ class CommandCenterApp:
         self.load_layout()
         self.update_focus_visuals()
 
-        self.win.connect("key-press-event", self.on_key_press)
-        self.win.connect("delete-event", lambda *_: self.hide_overlay() or True)
-
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGUSR1, self.toggle_visibility)
         GLib.idle_add(self.refresh_all_data)
         GLib.timeout_add(2000, self.periodic_tick)
+
+    def create_layer_window(self):
+        win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        win.set_name("overlay-win")
+        win.set_title("Command Center")
+
+        screen = win.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual:
+            win.set_visual(visual)
+
+        GtkLayerShell.init_for_window(win)
+        GtkLayerShell.set_namespace(win, "command-center")
+        GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_exclusive_zone(win, -1)
+        GtkLayerShell.set_keyboard_mode(win, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+        for edge in (
+            GtkLayerShell.Edge.TOP,
+            GtkLayerShell.Edge.BOTTOM,
+            GtkLayerShell.Edge.LEFT,
+            GtkLayerShell.Edge.RIGHT,
+        ):
+            GtkLayerShell.set_anchor(win, edge, True)
+
+        win.connect("key-press-event", self.on_key_press)
+        win.connect("delete-event", lambda *_: self.hide_overlay() or True)
+        return win
 
     def refresh_all_data(self):
         self.refresh_audio()
@@ -574,26 +576,23 @@ class CommandCenterApp:
 
     def show_overlay(self):
         self.is_visible = True
+        if self.win is None:
+            self.win = self.create_layer_window()
+            self.win.add(self.bg_ev)
         self.win.show_all()
         self.info_popup.hide()
         self.update_focus_visuals()
-        GLib.idle_add(self.refresh_audio)
-        GLib.idle_add(self.refresh_screenshots)
-        GLib.idle_add(self.refresh_bluetooth)
 
     def hide_overlay(self):
         self.is_visible = False
         self.dragging_tile = None
         self.resizing_tile = None
-        self.info_popup.hide()
-        self.win.hide()
+        PID_FILE.unlink(missing_ok=True)
+        Gtk.main_quit()
 
     def toggle_visibility(self):
-        if self.is_visible:
-            self.hide_overlay()
-        else:
-            self.show_overlay()
-        return True
+        self.hide_overlay()
+        return False
 
     def start_tile_drag(self, tile: DraggableTile, off_x: int, off_y: int):
         self.resizing_tile = None
@@ -1665,21 +1664,20 @@ class CommandCenterApp:
 
 
 def main():
-    daemon_flag = "--daemon" in sys.argv
+    if "--daemon" in sys.argv:
+        sys.exit(0)
     if PID_FILE.exists():
         try:
             old_pid = int(PID_FILE.read_text().strip())
-            if not daemon_flag:
-                os.kill(old_pid, signal.SIGUSR1)
+            os.kill(old_pid, signal.SIGUSR1)
             sys.exit(0)
         except Exception:
             PID_FILE.unlink(missing_ok=True)
 
     PID_FILE.write_text(str(os.getpid()))
     try:
-        app = CommandCenterApp(start_hidden=daemon_flag)
-        if not daemon_flag:
-            app.show_overlay()
+        app = CommandCenterApp(start_hidden=False)
+        app.show_overlay()
         Gtk.main()
     finally:
         PID_FILE.unlink(missing_ok=True)
