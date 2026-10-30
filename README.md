@@ -16,6 +16,8 @@ Moja konfiguracja **Hyprlanda**: bez odstępów i ramek, rozmycie warstw, polski
 | `killactive.sh` | SUPER+W: zamyka okno, przy Alacritty najpierw pyta |
 | `hyprpaper.conf` | zapasowy config hyprpapera (normalnie generuje go `wallpaper.sh`) |
 
+Menu tapet i pytanie przy zamykaniu Alacritty używają wofi ze stylem `~/.config/wofi/style.css`. Bez tego pliku wofi wygląda domyślnie.
+
 Tapety leżą w `~/Pictures/wallpapers`. Pliki z prefiksem `uw-` to tapety 21:9 i trafiają najpierw na monitory ultrawide. Miniatury są w `~/.cache/wallpaper-thumbs`.
 
 ## Instalacja
