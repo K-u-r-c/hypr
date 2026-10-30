@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.bak
+*.bak-*
+# per-komputer – szablon: monitors.default.conf, zapis aktualnych: monitors-detect.sh
+monitors.conf

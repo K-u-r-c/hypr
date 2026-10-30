@@ -5,7 +5,21 @@ export PATH="$HOME/.local/bin:$PATH"
 WALL_DIR="$HOME/Pictures/wallpapers"
 THUMB_DIR="$HOME/.cache/wallpaper-thumbs"
 WOFI_STYLE="$HOME/.config/wofi/style.css"
-MONITORS=("DP-1" "HDMI-A-1")
+# monitory wykrywane na żywo – nic nie jest wpisane na sztywno (główny: hypr/primary-monitor.sh)
+MONS_JSON=$(hyprctl monitors -j 2>/dev/null)
+mapfile -t MONITORS < <(jq -r '.[].name' <<<"$MONS_JSON" 2>/dev/null)
+PRIMARY=$("$HOME/.config/hypr/primary-monitor.sh" 2>/dev/null)
+[[ -z "$PRIMARY" ]] && PRIMARY="${MONITORS[0]}"
+mapfile -t MONITORS < <(printf '%s\n' "$PRIMARY" "${MONITORS[@]}" | awk 'NF && !seen[$0]++')   # główny pierwszy
+
+mon_res() {
+    jq -r --arg m "$1" '.[] | select(.name == $m) | "\(.width)x\(.height)"' <<<"$MONS_JSON"
+}
+
+# szeroki (21:9, 32:9) -> najpierw tapety uw-*
+is_wide() {
+    jq -e --arg m "$1" '.[] | select(.name == $m) | (.width / .height) >= 2' <<<"$MONS_JSON" >/dev/null
+}
 
 mkdir -p "$WALL_DIR" "$THUMB_DIR"
 
@@ -50,6 +64,73 @@ ensure_thumb() {
     printf '%s' "$thumb"
 }
 
+# jedno wywołanie naraz – równoległe uruchomienia (np. dwuklik) zostawiały po kilka mpvpaperów na monitor
+lock() {
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/wallpaper.sh.lock"
+    flock -w 15 9
+}
+
+is_image() {
+    case "${1,,}" in
+        *.png|*.jpg|*.jpeg|*.webp) return 0 ;;
+    esac
+    return 1
+}
+
+# zabija mpvpapera danego monitora ("\\*" = mpvpaper na wszystkich) i czeka, aż zniknie;
+# po PID-ach, bo proces z martwym wątkiem głównym (wątek CUDA dalej wisi) traci cmdline i pgrep -f go nie widzi
+stop_mpvpaper() {
+    local pids p alive
+    pids=$(pgrep -f "mpvpaper .* $1 ") || return 0
+    kill $pids 2>/dev/null
+    for _ in {1..40}; do
+        alive=0
+        for p in $pids; do
+            is_alive "$p" && alive=1
+        done
+        (( alive )) || return 0
+        sleep 0.05
+    done
+    kill -9 $pids 2>/dev/null
+}
+
+# istnieje i nie jest czystym zombie (zombie z żywymi wątkami dalej trzyma tapetę)
+is_alive() {
+    [[ -d /proc/$1 ]] || return 1
+    [[ $(ls "/proc/$1/task" 2>/dev/null | wc -l) -gt 1 || "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]]
+}
+
+# obrazy: jeden hyprpaper na wszystkie monitory (kilkanaście MB zamiast całego mpv na monitor);
+# config generowany ze stanu monitorów, hyprpaper restartowany tylko gdy coś się zmieniło
+sync_hyprpaper() {
+    local conf="${XDG_RUNTIME_DIR:-/tmp}/hyprpaper-wallpaper.conf"
+    local new="$conf.new" m wp
+    : > "$new"
+    for m in "${MONITORS[@]}"; do
+        wp=$(get_current_wp "$m")
+        if is_image "$wp" && [[ -f "$wp" ]]; then
+            printf 'wallpaper {\n    monitor = %s\n    path = %s\n    fit_mode = cover\n}\n' "$m" "$wp" >> "$new"
+        fi
+    done
+
+    if [[ ! -s "$new" ]]; then
+        rm -f "$new" "$conf"
+        pkill -x hyprpaper 2>/dev/null
+        return 0
+    fi
+    if pgrep -x hyprpaper >/dev/null && cmp -s "$new" "$conf"; then
+        rm -f "$new"
+        return 0
+    fi
+    mv -f "$new" "$conf"
+    pkill -x hyprpaper 2>/dev/null
+    for _ in {1..40}; do
+        pgrep -x hyprpaper >/dev/null || break
+        sleep 0.05
+    done
+    setsid -f hyprpaper -c "$conf" >/dev/null 2>&1 9>&- </dev/null
+}
+
 apply_monitor_wp() {
     local mon="$1"
     local wp="$2"
@@ -59,17 +140,20 @@ apply_monitor_wp() {
 
     printf '%s\n' "$wp" > "$(state_file "$mon")"
 
-    pkill -x hyprpaper 2>/dev/null
-    pkill -f "mpvpaper .* \\* " 2>/dev/null
-    pkill -f "mpvpaper .* ${mon} " 2>/dev/null
-    sleep 0.1
+    stop_mpvpaper "\\*"
+    stop_mpvpaper "$mon"
+    sync_hyprpaper
 
-    mpvpaper -f -p -o "no-audio --loop-file=inf --image-display-duration=inf --hwdec=auto --panscan=1.0" "$mon" "$wp" >/dev/null 2>&1
+    if ! is_image "$wp"; then
+        # 9>&- – mpvpaper nie może trzymać blokady po wyjściu skryptu
+        mpvpaper -f -p -o "no-audio --loop-file=inf --hwdec=auto --panscan=1.0" "$mon" "$wp" >/dev/null 2>&1 9>&-
+    fi
 }
 
 apply_target() {
     local target="$1"
     local wp="$2"
+    lock
     if [[ "$target" == "ALL" ]]; then
         for m in "${MONITORS[@]}"; do
             apply_monitor_wp "$m" "$wp"
@@ -77,9 +161,11 @@ apply_target() {
     else
         apply_monitor_wp "$target" "$wp"
         for m in "${MONITORS[@]}"; do
-            if [[ "$m" != "$target" ]] && ! pgrep -f "mpvpaper .* ${m} " >/dev/null; then
-                other_wp=$(get_current_wp "$m")
-                [[ -f "$other_wp" ]] && apply_monitor_wp "$m" "$other_wp"
+            # obrazy na pozostałych monitorach ogarnia już sync_hyprpaper; tu tylko brakujące wideo
+            other_wp=$(get_current_wp "$m")
+            if [[ "$m" != "$target" && -f "$other_wp" ]] && ! is_image "$other_wp" \
+                && ! pgrep -f "mpvpaper .* ${m} " >/dev/null; then
+                apply_monitor_wp "$m" "$other_wp"
             fi
         done
     fi
@@ -96,6 +182,7 @@ case "$cmd" in
         fi
         ;;
     restore)
+        lock
         first=$(list_wallpapers | head -n 1)
         for m in "${MONITORS[@]}"; do
             saved=$(get_current_wp "$m")
@@ -110,7 +197,7 @@ case "$cmd" in
         mapfile -t files < <(list_wallpapers)
         [[ ${#files[@]} -eq 0 ]] && exit 0
         focused_mon=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .name' | head -n 1)
-        [[ -z "$focused_mon" ]] && focused_mon="DP-1"
+        [[ -z "$focused_mon" ]] && focused_mon="$PRIMARY"
         current=$(get_current_wp "$focused_mon")
         next_idx=0
         for i in "${!files[@]}"; do
@@ -130,31 +217,35 @@ case "$cmd" in
         mapfile -t all_files < <(list_wallpapers)
         [[ ${#all_files[@]} -eq 0 ]] && exit 0
 
-        cur_dp=$(basename "$(get_current_wp DP-1)" 2>/dev/null)
-        cur_hdmi=$(basename "$(get_current_wp HDMI-A-1)" 2>/dev/null)
-        [[ -z "$cur_dp" ]] && cur_dp="none"
-        [[ -z "$cur_hdmi" ]] && cur_hdmi="none"
+        if ((${#MONITORS[@]} == 1)); then
+            target_mon="${MONITORS[0]}"; ref_mon="$target_mon"
+        else
+            mon_lines=()
+            for m in "${MONITORS[@]}"; do
+                cur=$(basename "$(get_current_wp "$m")" 2>/dev/null); cur="${cur%.*}"
+                mon_lines+=("$m ($(mon_res "$m")) [current: ${cur:-none}]")
+            done
+            mon_lines+=("All monitors (${MONITORS[*]})")
 
-        mon_choice=$(printf "DP-1   (3440x1440) [current: %s]\nHDMI-A-1 (1920x1080) [current: %s]\nBoth monitors (DP-1 + HDMI-A-1)\n" "${cur_dp%.*}" "${cur_hdmi%.*}" | wofi --dmenu \
-            --style "$WOFI_STYLE" \
-            --prompt "[*] Select Monitor:" \
-            --pre-display-cmd "echo '> %s'" \
-            --define use_search_box=false \
-            --define dynamic_lines=true \
-            --hide-scroll \
-            --width 560 \
-            --lines 3 \
-            --cache-file /dev/null \
-            --insensitive)
+            mon_choice=$(printf '%s\n' "${mon_lines[@]}" | wofi --dmenu \
+                --style "$WOFI_STYLE" \
+                --prompt "[*] Select Monitor:" \
+                --pre-display-cmd "echo '> %s'" \
+                --define use_search_box=false \
+                --define dynamic_lines=true \
+                --hide-scroll \
+                --width 560 \
+                --lines "${#mon_lines[@]}" \
+                --cache-file /dev/null \
+                --insensitive)
 
-        [[ -z "$mon_choice" ]] && exit 0
+            [[ -z "$mon_choice" ]] && exit 0
 
-        case "$mon_choice" in
-            Both*) target_mon="ALL"; ref_mon="DP-1" ;;
-            DP-1*) target_mon="DP-1"; ref_mon="DP-1" ;;
-            HDMI-A-1*) target_mon="HDMI-A-1"; ref_mon="HDMI-A-1" ;;
-            *) exit 0 ;;
-        esac
+            case "$mon_choice" in
+                All*) target_mon="ALL"; ref_mon="$PRIMARY" ;;
+                *) target_mon="${mon_choice%% *}"; ref_mon="$target_mon" ;;
+            esac
+        fi
 
         # Sort wallpapers so the ones matching the selected monitor's aspect ratio appear first
         uw_files=()
@@ -168,7 +259,7 @@ case "$cmd" in
             fi
         done
 
-        if [[ "$ref_mon" == "DP-1" ]]; then
+        if is_wide "$ref_mon"; then
             files=("${uw_files[@]}" "${fhd_files[@]}")
         else
             files=("${fhd_files[@]}" "${uw_files[@]}")
