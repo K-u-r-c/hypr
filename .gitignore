@@ -4,3 +4,11 @@ __pycache__/
 *.bak-*
 # per-komputer – szablon: monitors.default.conf, zapis aktualnych: monitors-detect.sh
 monitors.conf
+# stan wallpaper.sh (aktualne tapety per monitor)
+.current_wallpaper
+.wallpaper_*
+# command center ma osobne repo: https://github.com/K-u-r-c/command-center
+command_center*.py
+command_center_layout.json
+cc-restart.sh
+*.save
