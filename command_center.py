@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
@@ -765,12 +766,19 @@ class CommandCenterApp:
 
         self.screenshots = []
         self.shot_sel = 0
+        self.shots_sig = None
 
         self.monitors = detect_monitors()
         self.wall_monitors = [m[0] for m in self.monitors] + (["ALL"] if len(self.monitors) > 1 else []) or ["ALL"]
         self.wall_mon_idx = 0
         self.wallpapers = []
         self.wall_sel = 0
+        self.wall_sig = None
+        self.wall_pixbufs = {}
+        self.thumb_queue = queue.Queue()
+        self.thumb_pending = set()
+        self.thumb_failed = set()
+        threading.Thread(target=self.thumb_worker, daemon=True).start()
 
         self.bt_powered = True
         self.bt_scanning = False
@@ -847,9 +855,8 @@ class CommandCenterApp:
         win.connect("delete-event", lambda *_: self.hide_overlay() or True)
         return win
 
-    def refresh_all_data(self):
-        # One refresh per idle iteration, so key presses and redraws interleave with the work
-        steps = [
+    def refresh_steps(self):
+        return [
             self.refresh_launcher,
             self.refresh_audio,
             self.refresh_brightness,
@@ -860,12 +867,21 @@ class CommandCenterApp:
             self.check_updates,
         ]
 
+    def refresh_all_data(self):
+        # One refresh per idle iteration, so key presses and redraws interleave with the work
+        steps = self.refresh_steps()
+
         def _run_next():
             steps.pop(0)()
             return bool(steps)
 
         GLib.idle_add(_run_next)
         return False
+
+    def refresh_all_now(self):
+        # Cold start straight into a visible window: fill every tile before the first frame
+        for step in self.refresh_steps():
+            step()
 
     def sync_monitor_size(self):
         w, h = self.detect_focused_monitor_size()
@@ -880,24 +896,33 @@ class CommandCenterApp:
 
     def show_overlay(self):
         self.is_visible = True
-        if self.win is None:
-            self.sync_monitor_size()
-            self.win = self.create_layer_window()
-            self.win.add(self.bg_ev)
-            self.win.show_all()
-            for tile in self.tiles.values():
-                tile.apply_minimized()
-        else:
-            # Re-show in daemon mode: show() keeps hidden widgets (minimized bodies) hidden
-            self.sync_monitor_size()
-            self.win.show()
-            GLib.idle_add(self.refresh_all_data)
-        self.info_popup.hide()
-        self.set_status("READY")
+        self.sync_monitor_size()
+        # Everything the first frame shows is settled before the window maps – changes made
+        # after show() land in later frames and flicker during the fade-in
+        self.set_status("")
         self.search_active = True
         self.launch_entry.set_text("")
         self.refresh_launcher_results()
+        if self.win is None:
+            self.win = self.create_layer_window()
+            self.win.add(self.bg_ev)
+            self.bg_ev.show_all()
+            for tile in self.tiles.values():
+                tile.apply_minimized()
+        else:
+            # File-based tiles are cheap and rebuild only when something changed
+            self.refresh_screenshots()
+            self.refresh_wallpapers()
+        self.info_popup.hide()
+        self.results_ev.hide()
         self.update_focus_visuals()
+        if self.win.get_visible():
+            return
+        # Re-show in daemon mode: show() keeps hidden widgets (minimized bodies) hidden
+        self.win.show()
+        self.launch_entry.grab_focus_without_selecting()
+        # Subprocess-based tiles (audio, bluetooth, …) catch up after the window is up
+        GLib.idle_add(self.refresh_all_data)
 
     def hide_overlay(self):
         self.is_visible = False
@@ -1107,8 +1132,9 @@ class CommandCenterApp:
         title.get_style_context().add_class("hud-title")
         left_box.pack_start(title, False, False, 0)
 
-        self.status_lbl = Gtk.Label(label="READY")
+        self.status_lbl = Gtk.Label(label="")
         self.status_lbl.get_style_context().add_class("hud-status")
+        self.status_lbl.set_no_show_all(True)
         left_box.pack_start(self.status_lbl, False, False, 0)
 
         self.fixed.put(left_ev, 24, 16)
@@ -1246,7 +1272,9 @@ class CommandCenterApp:
         return False
 
     def set_status(self, text: str):
+        # Only action feedback is shown; with nothing to say the label (and its frame) disappears
         self.status_lbl.set_text(text)
+        self.status_lbl.set_visible(bool(text))
 
     def tile_title(self, tile_id: str, name: str) -> str:
         return f"{self.tile_order.index(tile_id) + 1:02d} // {name}"
@@ -1886,7 +1914,13 @@ class CommandCenterApp:
             except Exception:
                 pass
         shots.sort(key=lambda x: x[0], reverse=True)
-        self.screenshots = [p for _, p in shots[:15]]
+        shots = shots[:15]
+        # Same files as last time -> the tile already shows them; a rebuild would only flicker
+        sig = tuple((p.name, m) for m, p in shots)
+        if sig == self.shots_sig:
+            return
+        self.shots_sig = sig
+        self.screenshots = [p for _, p in shots]
         if self.shot_sel >= len(self.screenshots):
             self.shot_sel = max(0, len(self.screenshots) - 1)
 
@@ -2004,6 +2038,73 @@ class CommandCenterApp:
         self.wall_mon_idx = idx % len(self.wall_monitors)
         self.refresh_wallpapers()
 
+    @staticmethod
+    def file_mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def wall_thumb_pixbuf(self, wpath: Path):
+        tfile = THUMB_DIR / f"{wpath.name}.png"
+        mtime = self.file_mtime(tfile)
+        if not mtime:
+            return None
+        cached = self.wall_pixbufs.get(tfile.name)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        try:
+            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(tfile), 120, 68, True)
+        except Exception:
+            return None
+        self.wall_pixbufs[tfile.name] = (mtime, pb)
+        return pb
+
+    def queue_wall_thumbs(self, paths):
+        # Wallpapers added by hand (or by anything else) get a thumbnail too – same file name
+        # and ffmpeg filter as wallpaper.sh / wall-downloader, so all of them share one cache
+        for wpath in paths:
+            key = (str(wpath), self.file_mtime(wpath))
+            if key in self.thumb_pending or key in self.thumb_failed:
+                continue
+            if self.file_mtime(THUMB_DIR / f"{wpath.name}.png") >= key[1]:
+                continue
+            self.thumb_pending.add(key)
+            self.thumb_queue.put(key)
+
+    def thumb_worker(self):
+        # One background thread; ffmpeg never runs on the GTK main loop
+        while True:
+            key = self.thumb_queue.get()
+            src = Path(key[0])
+            dst = THUMB_DIR / f"{src.name}.png"
+            tmp = THUMB_DIR / f".{src.name}.tmp.png"
+            ok = False
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-i", str(src),
+                     "-vf", "scale=160:90:force_original_aspect_ratio=increase,crop=160:90",
+                     "-frames:v", "1", str(tmp)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=30,
+                )
+                if tmp.exists() and tmp.stat().st_size > 0:
+                    tmp.replace(dst)
+                    ok = True
+            except Exception:
+                pass
+            finally:
+                tmp.unlink(missing_ok=True)
+            if not ok:
+                self.thumb_failed.add(key)
+            self.thumb_pending.discard(key)
+            if self.thumb_queue.empty():
+                GLib.idle_add(self._on_wall_thumbs_ready)
+
+    def _on_wall_thumbs_ready(self):
+        self.refresh_wallpapers()
+        return False
+
     def refresh_wallpapers(self):
         for idx, b in enumerate(self.mon_btns):
             ctx = b.get_style_context()
@@ -2027,6 +2128,19 @@ class CommandCenterApp:
         if self.wall_sel >= len(self.wallpapers):
             self.wall_sel = max(0, len(self.wallpapers) - 1)
 
+        self.queue_wall_thumbs(self.wallpapers)
+        # Rebuild only when something visible changed (files, thumbnails, selection, [ACTIVE])
+        sig = (
+            tuple((p.name, self.file_mtime(p), self.file_mtime(THUMB_DIR / f"{p.name}.png"))
+                  for p in self.wallpapers),
+            self.wall_sel,
+            self.wall_mon_idx,
+            active_wp,
+        )
+        if sig == self.wall_sig:
+            return
+        self.wall_sig = sig
+
         for child in self.wall_list_box.get_children():
             self.wall_list_box.remove(child)
 
@@ -2038,15 +2152,11 @@ class CommandCenterApp:
             )
             ev.add(row)
 
-            tfile = THUMB_DIR / f"{wpath.name}.png"
-            if tfile.exists():
-                try:
-                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(tfile), 120, 68, True)
-                    img = Gtk.Image.new_from_pixbuf(pb)
-                    img.get_style_context().add_class("preview-box")
-                    row.pack_start(img, False, False, 0)
-                except Exception:
-                    pass
+            pb = self.wall_thumb_pixbuf(wpath)
+            if pb:
+                img = Gtk.Image.new_from_pixbuf(pb)
+                img.get_style_context().add_class("preview-box")
+                row.pack_start(img, False, False, 0)
 
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
             is_act = str(wpath) == active_wp
@@ -2909,11 +3019,12 @@ class CommandCenterApp:
 
 def main():
     # --daemon: stay resident and hidden, Super+Tab only toggles the window (instant)
-    # no flag:  signal a running instance, or run standalone and quit on close
-    daemon = "--daemon" in sys.argv
+    # no flag:  signal a running instance, or start the daemon and show it right away
+    #           (only the first press after a crash/reboot pays for the cold start)
+    start_hidden = "--daemon" in sys.argv
     pid = find_running_pid()
     if pid:
-        if daemon:
+        if start_hidden:
             sys.exit(0)
         try:
             os.kill(pid, signal.SIGUSR1)
@@ -2921,11 +3032,18 @@ def main():
         except ProcessLookupError:
             pass
 
+    # Before the PID file exists nobody can signal us; after it, a Super+Tab during startup
+    # would hit SIGUSR1's default action (terminate) – count those presses until the app is up
+    early_toggles = []
+    signal.signal(signal.SIGUSR1, lambda *_: early_toggles.append(1))
     PID_FILE.write_text(str(os.getpid()))
     try:
-        app = CommandCenterApp(daemon=daemon)
-        if not daemon:
+        app = CommandCenterApp(daemon=True)
+        if not start_hidden:
+            app.refresh_all_now()
             app.show_overlay()
+        if len(early_toggles) % 2:
+            app.toggle_visibility()
         Gtk.main()
     finally:
         if find_running_pid() is None or PID_FILE.read_text().strip() == str(os.getpid()):
