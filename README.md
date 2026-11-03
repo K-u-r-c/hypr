@@ -14,7 +14,7 @@ Moja konfiguracja **Hyprlanda**: bez odstępów i ramek, rozmycie warstw, polski
 | `primary-monitor.sh` | nazwa głównego monitora: `$PRIMARY_MONITOR` albo największy (`--json` zwraca cały obiekt z `hyprctl`) |
 | `wallpaper.sh` | tapety per monitor: obrazy przez **hyprpaper**, wideo i GIF-y przez **mpvpaper**. `restore`, `next`, `menu` (wofi), `set <monitor\|ALL> <plik>` |
 | `screensaver.sh`, `hypridle.conf` | wygaszacz Matrix (cmatrix) po 5 min bezczynności, wyłączenie ekranu po 20 min (**hypridle**) |
-| `workspace-osd.py` | po przełączeniu pulpitu na chwilę pokazuje jego numer i pasek 1–10 (zajęte jaśniejsze); działa na zdarzeniach Hyprlanda, bez odpytywania |
+| `workspace-osd.py` | po przełączeniu pulpitu na chwilę pokazuje jego numer i miniatury zajętych pulpitów (ostatni znany wygląd: mały zrzut `grim` ~1,2 s po wejściu na pulpit i po zmianach okien, z `nice 19`); poza tym działa na zdarzeniach Hyprlanda, bez odpytywania |
 | `hdr.sh` | HDR on/off/toggle/status dla monitora: dopisuje lub usuwa `bitdepth, 10, cm, hdr` w jego linii w `monitors.conf` (używa go command center, `[T]`) |
 | `killactive.sh` | SUPER+W: zamyka okno, przy Alacritty najpierw pyta |
 | `hyprpaper.conf` | zapasowy config hyprpapera (normalnie generuje go `wallpaper.sh`) |
