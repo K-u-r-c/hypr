@@ -13,6 +13,9 @@ Moja konfiguracja **Hyprlanda**: bez odstępów i ramek, rozmycie warstw, polski
 | `monitors-detect.sh` | zapisuje aktualnie podłączone monitory do `monitors.conf` jako punkt wyjścia do edycji (`--print` tylko wypisuje) |
 | `primary-monitor.sh` | nazwa głównego monitora: `$PRIMARY_MONITOR` albo największy (`--json` zwraca cały obiekt z `hyprctl`) |
 | `wallpaper.sh` | tapety per monitor: obrazy przez **hyprpaper**, wideo i GIF-y przez **mpvpaper**. `restore`, `next`, `menu` (wofi), `set <monitor\|ALL> <plik>` |
+| `screensaver.sh`, `hypridle.conf` | wygaszacz Matrix (cmatrix) po 5 min bezczynności, wyłączenie ekranu po 20 min (**hypridle**) |
+| `workspace-osd.py` | po przełączeniu pulpitu na chwilę pokazuje jego numer i pasek 1–10 (zajęte jaśniejsze); działa na zdarzeniach Hyprlanda, bez odpytywania |
+| `hdr.sh` | HDR on/off/toggle/status dla monitora: dopisuje lub usuwa `bitdepth, 10, cm, hdr` w jego linii w `monitors.conf` (używa go command center, `[T]`) |
 | `killactive.sh` | SUPER+W: zamyka okno, przy Alacritty najpierw pyta |
 | `hyprpaper.conf` | zapasowy config hyprpapera (normalnie generuje go `wallpaper.sh`) |
 
@@ -23,7 +26,7 @@ Tapety leżą w `~/Pictures/wallpapers`. Pliki z prefiksem `uw-` to tapety 21:9 
 ## Instalacja
 
 ```bash
-sudo pacman -S --needed hyprland hyprpaper jq wofi grim slurp wl-clipboard alacritty dolphin
+sudo pacman -S --needed hyprland hyprpaper jq wofi grim slurp wl-clipboard alacritty dolphin hypridle cmatrix python-gobject gtk3 gtk-layer-shell python-cairo
 paru -S --needed mpvpaper            # tapety wideo (AUR)
 
 [ -d ~/.config/hypr ] && mv ~/.config/hypr ~/.config/hypr.bak
@@ -55,6 +58,6 @@ workspace = 1, monitor:DP-1, default:true
 | SUPER+E / Z / G | Dolphin / Zen / hyprlauncher |
 | SUPER+V | okno pływające |
 | SUPER+strzałki, +SHIFT, +CTRL | fokus / przesuwanie / rozmiar okna |
-| SUPER+1…5, +SHIFT | workspace / przeniesienie okna |
+| SUPER+1…9, 0 (=10), +SHIFT | workspace / przeniesienie okna |
 | Print, SHIFT+Print, CTRL+Print | zrzut ekranu / obszaru do `~/Pictures` i schowka / obszaru tylko do schowka |
 | SUPER+M | wyjście z Hyprlanda |
