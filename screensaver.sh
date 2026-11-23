@@ -10,10 +10,15 @@ case "${1:-}" in
 start)
     pgrep -f "alacritty --class $class" >/dev/null && exit 0
     [[ "$(hyprctl activewindow -j | jq -r '.fullscreen // 0')" != "0" ]] && exit 0
+    # cmatrix rysuje kolorami palety (normal.black = tło, normal/bright.white = znaki), nie primary.background,
+    # więc nadpisujemy je na czystą czerń i biel. sleep: cmatrix musi wystartować dopiero po tym, jak
+    # Hyprland rozciągnie okno na cały monitor, bo inaczej zostaje w rozmiarze startowym (róg ekranu).
     exec alacritty --class "$class" \
         -o 'window.opacity=1.0' -o 'window.padding={x=0,y=0}' \
         -o 'colors.primary.background="#000000"' \
-        -e cmatrix -b -u 6 -C green
+        -o 'colors.normal.black="#000000"' -o 'colors.bright.black="#000000"' \
+        -o 'colors.normal.white="#ffffff"' -o 'colors.bright.white="#ffffff"' \
+        -e sh -c 'sleep 0.3; exec cmatrix -b -u 6 -C white'
     ;;
 stop)
     pkill -f "alacritty --class $class"

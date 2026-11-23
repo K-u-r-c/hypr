@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Główny monitor (waybar, domyślny cel tapet): $PRIMARY_MONITOR z monitors.conf,
+# Główny monitor (waybar, domyślny cel tapet): $PRIMARY_MONITOR z monitors.lua,
 # a gdy nie jest ustawiony albo nie jest podłączony – największy.
 #   primary-monitor.sh         -> nazwa, np. DP-1
 #   primary-monitor.sh --json  -> obiekt z hyprctl monitors -j

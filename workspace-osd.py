@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Wskaźnik pulpitu: po przełączeniu na chwilę pokazuje na środku ekranu numer pulpitu i miniatury
-# zajętych pulpitów (aktywny podświetlony). Autostart w hyprland.conf, animację robi Hyprland (layerrule).
+# zajętych pulpitów (aktywny podświetlony). Autostart w hyprland.lua, animację robi Hyprland (layerrule).
 #
 # Miniatury: Hyprland nie daje zrzutu niewidocznego pulpitu, więc każdy pulpit jest fotografowany
 # (grim, mała skala) ~1,2 s po wejściu na niego i ~1,5 s po zmianie okien – pokazywany jest ostatni
@@ -24,7 +24,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("GtkLayerShell", "0.1")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, GtkLayerShell
 
-SHOW_MS = 900
+SHOW_MS = 300
 THUMB_W, THUMB_H = 176, 99            # logiczne px miniatury (16:9)
 SHOT_AFTER_SWITCH_MS = 1200           # po zniknięciu wskaźnika, żeby nie trafił na zdjęcie
 SHOT_AFTER_CHANGE_MS = 1500           # po otwarciu/zamknięciu/przeniesieniu okna

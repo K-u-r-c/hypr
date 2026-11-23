@@ -2,8 +2,9 @@ __pycache__/
 *.pyc
 *.bak
 *.bak-*
-# per-komputer – szablon: monitors.default.conf, zapis aktualnych: monitors-detect.sh
+# per-komputer – szablon: monitors.default.lua, zapis aktualnych: monitors-detect.sh
 monitors.conf
+monitors.lua
 # stan wallpaper.sh (aktualne tapety per monitor)
 .current_wallpaper
 .wallpaper_*
